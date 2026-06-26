@@ -4,7 +4,7 @@ import { fetchDMMessages, fetchRoomMessages, addMessage } from "../../redux/slic
 import { getSocket } from "../../hooks/useSocket";
 import MessageBubble from "./MessageBubble";
 import AIChat from "./AIChat";
-import { FiSend, FiImage, FiCpu, FiUsers } from "react-icons/fi";
+import { FiSend, FiImage, FiCpu, FiUsers, FiX } from "react-icons/fi";
 import axios from "axios";
 import toast from "react-hot-toast";
 
@@ -16,8 +16,11 @@ export default function ChatWindow() {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
+  const [imageFile, setImageFile] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
   const messagesEndRef = useRef(null);
   const typingTimeout = useRef(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     if (!activeChat) return;
@@ -33,7 +36,6 @@ export default function ChatWindow() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    // Get AI suggestions for last message
     if (messages.length > 0) {
       const last = messages[messages.length - 1];
       if (last.sender?._id !== user._id && last.sender !== user._id && last.content) {
@@ -69,28 +71,68 @@ export default function ChatWindow() {
     }, 1500);
   };
 
-  const sendMessage = () => {
-    if (!text.trim() || sending) return;
+  const uploadToCloudinary = async (file) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("upload_preset", import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET);
+    const res = await axios.post(
+      `https://api.cloudinary.com/v1_1/${import.meta.env.VITE_CLOUDINARY_CLOUD_NAME}/image/upload`,
+      formData
+    );
+    return res.data.secure_url;
+  };
+
+  const sendMessage = async () => {
+    if (!text.trim() && !imageFile) return;
+    if (sending) return;
+
     const socket = getSocket();
     setSending(true);
 
-    if (activeChat.type === "dm") {
-      socket?.emit("message:send", {
-        senderId: user._id,
-        receiverId: activeChat.data._id,
-        content: text.trim(),
-      });
-    } else {
-      socket?.emit("room:message:send", {
-        senderId: user._id,
-        roomId: activeChat.data._id,
-        content: text.trim(),
-      });
-    }
+    try {
+      let imageUrl = "";
+      if (imageFile) {
+        imageUrl = await uploadToCloudinary(imageFile);
+      }
 
-    setText("");
-    setSuggestions([]);
-    setSending(false);
+      const payload = {
+        senderId: user._id,
+        content: text.trim(),
+        image: imageUrl,
+      };
+
+      if (activeChat.type === "dm") {
+        socket?.emit("message:send", { ...payload, receiverId: activeChat.data._id });
+      } else {
+        socket?.emit("room:message:send", { ...payload, roomId: activeChat.data._id });
+      }
+
+      setText("");
+      setImageFile(null);
+      setImagePreview(null);
+      setSuggestions([]);
+    } catch (err) {
+      toast.error("Image upload failed. Try again.");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleImageSelect = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("Image size 5MB se zyada nahi honi chahiye");
+      return;
+    }
+    setImageFile(file);
+    setImagePreview(URL.createObjectURL(file));
+    e.target.value = "";
+  };
+
+  const removeImage = () => {
+    setImageFile(null);
+    setImagePreview(null);
   };
 
   if (!activeChat) {
@@ -165,9 +207,37 @@ export default function ChatWindow() {
         </div>
       )}
 
+      {/* Image Preview */}
+      {imagePreview && (
+        <div className="px-4 pb-2 border-t border-slate-700/30 pt-2">
+          <div className="relative inline-block">
+            <img src={imagePreview} alt="preview" className="h-24 rounded-xl border border-slate-600 object-cover" />
+            <button
+              onClick={removeImage}
+              className="absolute -top-2 -right-2 bg-red-500 hover:bg-red-600 text-white rounded-full w-5 h-5 flex items-center justify-center transition"
+            >
+              <FiX size={11} />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Input */}
       <div className="px-4 py-4 border-t border-slate-700/50 bg-dark-800">
+        <input
+          type="file"
+          accept="image/*"
+          ref={fileInputRef}
+          className="hidden"
+          onChange={handleImageSelect}
+        />
         <div className="flex items-center gap-3 bg-dark-900 rounded-2xl px-4 py-2 border border-slate-700">
+          <button
+            onClick={() => fileInputRef.current.click()}
+            className="text-slate-400 hover:text-primary-400 transition flex-shrink-0"
+          >
+            <FiImage size={18} />
+          </button>
           <input
             value={text}
             onChange={(e) => { setText(e.target.value); handleTyping(); }}
@@ -177,10 +247,14 @@ export default function ChatWindow() {
           />
           <button
             onClick={sendMessage}
-            disabled={!text.trim()}
+            disabled={!text.trim() && !imageFile}
             className="bg-primary-600 hover:bg-primary-700 disabled:opacity-30 text-white p-2.5 rounded-xl transition"
           >
-            <FiSend size={16} />
+            {sending ? (
+              <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin block" />
+            ) : (
+              <FiSend size={16} />
+            )}
           </button>
         </div>
       </div>
